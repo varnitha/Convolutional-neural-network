@@ -1,0 +1,186 @@
+import torch
+import torch.nn as nn
+import torchvision as vision
+import torchvision.transforms as transforms
+import torch.utils.data as data
+import numpy as np
+import torch.optim as optim
+import pandas as pd
+from PIL import Image
+from sklearn.metrics import cohen_kappa_score
+import matplotlib.pyplot as plt
+import csv
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+num_epochs = 3
+learning_rate = 0.001
+imsize=240
+cropsize=224
+batchsize=30
+
+
+transform_train = transforms.Compose([
+            transforms.Resize(imsize),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
+            transforms.RandomCrop(cropsize), 
+            transforms.ToTensor()
+        ])
+    
+transform_test = transforms.Compose([
+    transforms.Resize(imsize), 
+    transforms.CenterCrop(cropsize), 
+    transforms.ToTensor()
+    ])
+
+lbl=[0, 1, 2, 3, 4]
+train_weights = []
+test_weights = []
+
+def printstatistics(lbl_arr, process):
+    print("Total : ", len(lbl_arr))
+    unique_lbls = set(lbl_arr)
+    count = []
+    for lbl in unique_lbls:
+        alist = []
+        for i, v in enumerate(lbl_arr):
+            if v==lbl: alist.append(i)
+        count.append(len(alist))
+        print(f"Number of images in class  {lbl} is  {len(alist)}")
+
+    sv = sum(count)
+    weights = []
+    for i, val in enumerate(count):
+        weights.append(sv/val)
+    tot = sum(weights)
+    print("Weights :")
+    for val in weights:
+        print(np.round(val/tot,3), end=',')
+        if process == "train":
+            train_weights.append(np.round(val/tot, 3))
+        elif process == "test":
+            test_weights.append(np.round(val/tot, 3))
+
+    print("\ntrain_weights ----------> ", train_weights)
+    print("\ntest_weights ----------> ", test_weights)
+    print('\n-----------------\n')
+
+
+class CDATA(data.Dataset):
+    def __init__(self,csv_path,img_path,transform=None, process=""):
+        df=pd.read_csv(csv_path)
+        self.transform=transform
+        self.img_path=img_path
+        self.X_train=df['image']
+        self.y_train=df['level']
+        printstatistics(self.y_train, process)
+        
+    def __getitem__(self,index):
+        path = './'+self.img_path+self.X_train[index]+'.png'
+        img=Image.open(path)
+        label=self.y_train[index]
+        img=img.convert('RGB')
+
+        if self.transform is not None:
+            img=self.transform(img)
+
+
+        return img,label
+
+    def __len__(self):
+        return len(self.X_train.index)
+
+
+trainset = CDATA('trainLabelssam.csv','trainsam/' ,transform=transform_train, process="train")
+testset = CDATA('retinopathy_solutionsam.csv','testsam/',transform=transform_test, process="test")
+train_loader = data.DataLoader(dataset=trainset,
+                                           batch_size=batchsize, 
+                                           shuffle=True)
+
+test_loader = data.DataLoader(dataset=testset,
+                                          batch_size=batchsize, 
+                                          shuffle=False)
+
+
+class FineTuneModel(nn.Module):
+    def __init__(self, original_model):
+        super(FineTuneModel, self).__init__()
+        
+        if startswith('resnet'):
+            # Everything except the last linear layer
+            self.features = nn.Sequential(*list(original_model.children())[:-1])
+            num_ftrs = original_model.fc.in_features
+            self.classifier = nn.Sequential(nn.Linear(num_ftrs, 5))
+            self.modelName = 'resnet'
+        else :
+            raise("Finetuning not supported on this architecture yet")
+
+    def forward(self, x):
+        f = self.features(x)
+        f = f.view(f.size(0), -1)
+        y = self.classifier(f)
+        return y
+if model_name == 'resnet50':
+    original_model = torchvision.models.resnet50(pretrained=True)
+net = FineTuneModel(original_model, model_name)
+
+
+# Loss and optimizer
+class_weg = torch.FloatTensor(train_weights).to(device)
+criterion = nn.CrossEntropyLoss(weight=class_weg).to(device)
+optimizer = optim.SGD(net.parameters(), lr=learning_rate)
+scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 50, 65], gamma=0.1)
+# Train the model
+total_step = len(train_loader)
+def train(epoch):
+        model.train()
+        train_loss = 0
+        correct = []
+        predicted = []
+        for batch_idx, (inputs, targets) in enumerate(train_loader):
+            inputs, targets = inputs.to(device), targets.to(device)
+            optimizer.zero_grad()
+            outputs = net(inputs)
+            loss = criterion(outputs, targets)
+            loss.backward()
+            optimizer.step()
+
+            train_loss += loss.item()
+            _, pred = torch.max(outputs.data, 1)
+            correct.extend(targets.cpu().numpy())
+            predicted.extend(pred.cpu().numpy())
+                        
+        
+        print ("Epoch [{}/{}], Step [{}/{}] Loss: {:.4f}"
+                  .format(epoch+1, num_epochs, batch_idx+1, total_step, loss.item()))
+      
+        
+def test():
+    model.eval()
+    test_loss = 0
+    correct = []
+    predicted = []
+    corrt = 0
+    total = 0
+    print ('Testing==>')
+    for batch_idx, (inputs, targets) in enumerate(test_loader):
+        inputs, targets = inputs.to(device), targets.to(device)
+        with torch.no_grad():
+            outputs = net(inputs)
+            loss = criterion(outputs, targets)
+        test_loss += loss.item()
+        _, pred = torch.max(outputs.data, 1)
+        total += targets.size(0)
+        corrt += (pred == targets).sum().item()
+        correct.extend(targets.cpu().numpy())
+        predicted.extend(pred.cpu().numpy())          
+    kappa=cohen_kappa_score(correct,predicted)
+    print(kappa)
+    print('Accuracy: {} %'.format(100 * corrt / total))
+        
+        
+for epoch in range(1, num_epochs+1):
+    train(epoch)
+    test()
